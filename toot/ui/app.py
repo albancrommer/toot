@@ -2,8 +2,9 @@
 import os
 import webbrowser
 
-from toot import __version__, api
+from enum import Enum
 
+from toot import __version__, api
 from toot.exceptions import ConsoleError
 from toot.ui.parsers import parse_status
 from toot.ui.utils import draw_horizontal_divider, draw_lines, size_as_drawn
@@ -18,6 +19,16 @@ except ImportError:
     raise ConsoleError("Curses is not available on this platform")
 
 
+def parse_key(ch):
+    return chr(ch).lower() if curses.ascii.isprint(ch) else None
+
+
+class Timeline(Enum):
+    HOME = "Home timeline"
+    PUBLIC = "Public timeline"
+    LOCAL_PUBLIC = "Local public timeline"
+
+
 class Color:
     @classmethod
     def setup_palette(class_):
@@ -30,6 +41,7 @@ class Color:
         curses.init_pair(7, curses.COLOR_MAGENTA, curses.COLOR_BLACK)
         curses.init_pair(8, curses.COLOR_WHITE, curses.COLOR_BLUE)
         curses.init_pair(9, curses.COLOR_WHITE, curses.COLOR_RED)
+        curses.init_pair(10, curses.COLOR_WHITE, curses.COLOR_GREEN)
 
         class_.WHITE = curses.color_pair(1)
         class_.BLUE = curses.color_pair(2)
@@ -40,6 +52,7 @@ class Color:
         class_.MAGENTA = curses.color_pair(7)
         class_.WHITE_ON_BLUE = curses.color_pair(8)
         class_.WHITE_ON_RED = curses.color_pair(9)
+        class_.WHITE_ON_GREEN = curses.color_pair(10)
 
         class_.HASHTAG = class_.BLUE | curses.A_BOLD
 
@@ -253,6 +266,11 @@ class StatusDetailWindow:
         self.window.refresh()
 
 
+class CloseModal(Exception):
+    def __init__(self, return_value=None):
+        self.return_value = return_value
+
+
 class Modal:
     def __init__(self, stdscr, resize_callback=None):
         self.stdscr = stdscr
@@ -281,11 +299,15 @@ class Modal:
     def setup_windows(self):
         height, width, y, x = self.get_size_pos(self.stdscr)
         self.window = curses.newwin(height, width, y, x)
+        self.window.keypad(True)
+
+    def draw_contents(self):
+        draw_lines(self.window, self.get_content(), 1, 2, Color.WHITE)
 
     def full_redraw(self):
         self.setup_windows()
         self.window.box()
-        draw_lines(self.window, self.get_content(), 1, 2, Color.WHITE)
+        self.draw_contents()
 
     def show(self):
         self.panel.top()
@@ -297,21 +319,78 @@ class Modal:
         self.panel.hide()
         curses.panel.update_panels()
 
+    def handle_keypress(self, ch):
+        key = chr(ch).lower() if curses.ascii.isprint(ch) else None
+
+        if key == 'q':
+            raise CloseModal()
+
+        if ch == curses.KEY_RESIZE:
+            if self.resize_callback:
+                self.resize_callback()
+            self.full_redraw()
+
     def loop(self):
         self.show()
 
         while True:
             ch = self.window.getch()
-            key = chr(ch).lower() if curses.ascii.isprint(ch) else None
+            try:
+                self.handle_keypress(ch)
+            except CloseModal as ex:
+                self.hide()
+                return ex.return_value
 
-            if key == 'q':
-                break
-            elif ch == curses.KEY_RESIZE:
-                if self.resize_callback:
-                    self.resize_callback()
-                self.full_redraw()
 
-        self.hide()
+class SelectModal(Modal):
+    """
+    Allows the user to pick an option from a list.
+    """
+    def __init__(self, *args, **kwargs):
+        self.choices = list(kwargs.pop("choices"))
+        self.selected = 0
+        super().__init__(*args, **kwargs)
+
+    def get_size_pos(self, stdscr):
+        screen_height, screen_width = stdscr.getmaxyx()
+
+        height = len(self.choices) + 2
+        width = max(len(c.value) for c in self.choices) + 6
+
+        y = (screen_height - height) // 2
+        x = (screen_width - width) // 2
+
+        return height, width, y, x
+
+    def draw_contents(self):
+        height, width = self.window.getmaxyx()
+
+        for idx, choice in enumerate(self.choices):
+            selected = idx == self.selected
+            pattern = "> {} <" if selected else "  {}  "
+            line = pattern.format(choice.value.ljust(width - 6))
+            color = Color.WHITE_ON_GREEN | curses.A_BOLD if selected else Color.WHITE
+            self.window.addstr(idx + 1, 1, fit_text(line, width - 2), color)
+
+    def handle_keypress(self, ch):
+        key = parse_key(ch)
+
+        if key == 'j' or ch == curses.KEY_DOWN:
+            self.selected = (self.selected + 1) % len(self.choices)
+            self.draw_contents()
+
+        elif key == 'k' or ch == curses.KEY_UP:
+            self.selected = (self.selected - 1) % len(self.choices)
+            self.draw_contents()
+
+        elif ch == curses.ascii.ESC:
+            raise CloseModal()
+
+        elif ch == curses.ascii.LF:
+            raise CloseModal(self.choices[self.selected])
+
+        else:
+            super().handle_keypress(ch)
 
 
 class HelpModal(Modal):
@@ -553,7 +632,7 @@ class TimelineApp:
     def loop(self):
         while True:
             ch = self.left.pad.getch()
-            key = chr(ch).lower() if curses.ascii.isprint(ch) else None
+            key = parse_key(ch)
 
             if key == 'q':
                 return
@@ -587,6 +666,11 @@ class TimelineApp:
 
             elif key == 'r':
                 self.reply()
+
+            elif key == 't':
+                modal = SelectModal(self.stdscr, choices=Timeline)
+                selected = modal.loop()
+                self.full_redraw()
 
             elif ch == curses.KEY_RESIZE:
                 self.on_resize()
