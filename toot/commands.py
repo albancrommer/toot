@@ -6,7 +6,7 @@ from toot.exceptions import ConsoleError, NotFoundError
 from toot.output import (print_out, print_instance, print_account,
                          print_search_results, print_timeline, print_notifications)
 from toot.utils import assert_domain_exists, multiline_input, EOF_KEY
-
+import json
 
 def get_timeline_generator(app, user, args):
     # Make sure tag, list and public are not used simultaneously
@@ -44,7 +44,10 @@ def timeline(app, user, args):
         if args.reverse:
             items = reversed(items)
 
-        print_timeline(items)
+        if "json" in args :
+            print( json.dumps( items ) )
+        else:
+            print_timeline(items)
 
         if args.once:
             break

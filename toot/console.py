@@ -33,6 +33,11 @@ Command = namedtuple("Command", ["name", "description", "require_auth", "argumen
 
 # Aruguments added to every command
 common_args = [
+    (["--json"], {
+        "help": "use json for output",
+        "action": 'store_true',
+        "default": False,
+    }),
     (["--no-color"], {
         "help": "don't use ANSI colors in output",
         "action": 'store_true',
